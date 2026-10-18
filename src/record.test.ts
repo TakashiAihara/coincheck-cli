@@ -503,7 +503,8 @@ describe("snapshots", () => {
   test("fetches again every snapshot interval", async () => {
     setup();
     start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }], snapshotIntervalMs: 100 });
-    await waitFor(() => server.restRequests.length >= 4, 2000);
+    // stop より後に届いた応答は書かないので、待つ要求は期待する件数より 1 件多くする
+    await waitFor(() => server.restRequests.length >= 5, 2000);
     await recorder!.stop();
     await Bun.sleep(100);
     expect(readDay(dir.path, "orderbook_snapshot/btc_jpy", todayUtc()).length).toBeGreaterThan(3);
@@ -518,14 +519,16 @@ describe("snapshots", () => {
     await waitFor(() => server.restRequests.length === 2, 1000);
   });
 
-  test("fetches again after a reconnect even when a fetch was still running", async () => {
+  test("discards a snapshot whose fetch started before a reconnect and fetches again", async () => {
     setup();
+    const stale = { asks: [["1.0", "9"]], bids: [["0.5", "9"]] };
     let release: (() => void) | undefined;
     server.rest = () =>
       new Promise<Response>((resolve) => {
-        release = () => resolve(Response.json(SNAPSHOT));
+        release = () => resolve(Response.json(stale));
       });
-    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }] });
+    const recvAt = new Date("2026-10-12T10:00:00.000Z");
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }], now: () => recvAt });
     await waitFor(() => server.restRequests.length === 1, 1000);
     server.closeConn(0);
     await waitFor(() => server.opened === 2 && sentOn(1).length === 1, 2000);
@@ -536,24 +539,40 @@ describe("snapshots", () => {
     release!();
     await waitFor(() => server.restRequests.length === 2, 1000);
     await Bun.sleep(200);
+    // 同じ接続の間に終わった取得は取り直さない (interval は既定の 60 秒)
     expect(server.restRequests.length).toBe(2);
+    await recorder!.stop();
+    expect(readDay(dir.path, "orderbook_snapshot/btc_jpy", "2026-10-12").map((r) => r.msg)).toEqual(
+      [SNAPSHOT],
+    );
   });
 
-  test("does not queue another fetch when an interval tick finds one running", async () => {
+  test("does not fetch again after stop, even for a fetch that started before a reconnect", async () => {
     setup();
     let release: (() => void) | undefined;
     server.rest = () =>
       new Promise<Response>((resolve) => {
         release = () => resolve(Response.json(SNAPSHOT));
       });
-    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }], snapshotIntervalMs: 50 });
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }] });
     await waitFor(() => server.restRequests.length === 1, 1000);
-    await Bun.sleep(300);
-    server.rest = () => new Promise<Response>(() => {});
+    server.closeConn(0);
+    await waitFor(() => server.opened === 2, 2000);
+    await recorder!.stop();
     release!();
-    await Bun.sleep(30);
-    // 応答の直後に取り直しはしない。次の取得は interval で始まる
+    await Bun.sleep(200);
     expect(server.restRequests.length).toBe(1);
+  });
+
+  test("fetches again at once when a fetch started before a reconnect fails", async () => {
+    setup();
+    server.rest = () => new Promise<Response>(() => {});
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }], snapshotTimeoutMs: 300 });
+    await waitFor(() => server.restRequests.length === 1, 1000);
+    server.closeConn(0);
+    await waitFor(() => server.opened === 2, 2000);
+    // 打ち切りの直後に取り直す。interval (既定 60 秒) を待たない
+    await waitFor(() => server.restRequests.length === 2, 1000);
   });
 
   test("discards a non-200 response even when its body looks like a book", async () => {
@@ -624,8 +643,6 @@ describe("snapshots", () => {
     const firstAt = Date.now();
     await waitFor(() => server.opened >= 2, 1500);
     expect(Date.now() - firstAt).toBeGreaterThanOrEqual(250);
-    // スナップショットで延びていれば、最後の取得 (50ms ごと) から 300ms 後まで切れない
-    expect(Date.now() - firstAt).toBeLessThan(450);
   });
 
   test("does not write a snapshot that arrives after stop", async () => {

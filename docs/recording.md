@@ -3,7 +3,7 @@
 ## 結論
 
 - 常駐させたホストで `coincheck record` を systemd で回し続ける。落ちたことは外から気づける形にする (記録が書かれていないと通知が来る外形監視)
-- 生存の判定は `orderbook` / `orderbook_snapshot` / `trades` のそれぞれで最新のファイルの更新時刻を見て、全部が新しいときだけ外形監視に生存を送る (どれか 1 つだけ止まっても気づけるように)。新しさの基準は板の差分が 2 分、スナップショットが 5 分、約定が 60 分
+- 生存の判定は `orderbook` / `orderbook_snapshot` / `trades` のそれぞれで最新のファイルの更新時刻を見て、全部が新しいときだけ外形監視に生存を送る (どれか 1 つだけ止まっても気づけるように)。新しさの基準は板の差分が 2 分、スナップショットが 4 分、約定が 60 分
 - `bun` は `.mise.toml` と同じ版を入れる (テストした版と動かす版を揃えるため)
 - 記録は 1 pair で約 15 MB/日 (gzip、5 秒ごとのメンバー)。古いファイルの削除はこの CLI ではしない
 
@@ -34,11 +34,11 @@ WantedBy=multi-user.target
 ```bash
 #!/usr/bin/env bash
 # /usr/local/bin/coincheck-record-heartbeat
-# 記録が動いていて、板の差分が 2 分以内、スナップショットが 5 分以内、約定が 60 分以内に書かれていれば Kuma に生存を送る。
+# 記録が動いていて、板の差分が 2 分以内、スナップショットが 4 分以内、約定が 60 分以内に書かれていれば Kuma に生存を送る。
 # 送らないこと自体が異常の合図 (Kuma の push 監視が 180 秒で DOWN にする)
 set -u
 systemctl is-active -q coincheck-record || exit 1
-for st in orderbook:2 orderbook_snapshot:5 trades:60; do
+for st in orderbook:2 orderbook_snapshot:4 trades:60; do
   [ -n "$(find <data>/${st%%:*}/btc_jpy -name '*.jsonl.gz' -mmin -${st##*:} -print -quit)" ] || { echo "no fresh ${st%%:*} file"; exit 1; }
 done
 # token を argv に載せないため、curl の設定として stdin から渡す
@@ -66,5 +66,5 @@ WantedBy=timers.target
 ```
 
 - 板の差分は約 2.8 件/秒で、flush は 5 秒ごとなので、2 分書かれなければ止まっている
-- スナップショットは 60 秒ごとに 1 件。1 回の失敗 (最長 10 秒の打ち切り) で次の書き込みまで約 2 分空くので、2 回続けて失敗したら気づく 5 分にする
+- スナップショットは 60 秒ごとに 1 件。k 回続けて失敗すると最後の書き込みから最大 (k+1)×60+5 秒空くので、4 分の基準では 3 回続けて失敗したら生存を送らなくなる (1 回の失敗では誤報しない)
 - 約定は閑散時に 2 分以上空く (2026-10-18 14 時 JST の観測で 90 秒に 7 件の時間帯と、120 秒に 1 件の時間帯があった) ので 60 分で見る。約定の stream だけが止まったときに気づくのは最大で 60 分遅れる

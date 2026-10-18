@@ -123,8 +123,8 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   const paths = new Map<string, string>();
   const created = new Set<string>();
   const snapshotInFlight = new Set<string>();
-  // 再接続の時点で取得中なら、その応答は切断より前の板かもしれないので、終わったら取り直す
-  const snapshotAgain = new Set<string>();
+  // 接続を開くたびに増やす。取得を始めた後に開き直していたら、その応答は差分が途切れる前の板かもしれない
+  let opens = 0;
 
   let ws: WebSocket | undefined;
   let stopped = false;
@@ -235,43 +235,49 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     }
   }
 
-  function snapshotAll(afterReconnect = false) {
-    for (const pair of snapshotPairs) snapshot(pair, afterReconnect);
+  function snapshotAll() {
+    for (const pair of snapshotPairs) snapshot(pair);
   }
 
-  function snapshot(pair: string, afterReconnect: boolean) {
+  function snapshot(pair: string) {
+    if (stopped) return;
     // 前の取得が終わる前に次を始めると、応答が遅いときに取得が積み上がる
-    if (snapshotInFlight.has(pair)) {
-      if (afterReconnect) snapshotAgain.add(pair);
-      return;
-    }
+    if (snapshotInFlight.has(pair)) return;
     snapshotInFlight.add(pair);
-    void fetchSnapshot(pair).finally(() => {
+    void fetchSnapshot(pair).then((stale) => {
       snapshotInFlight.delete(pair);
-      if (snapshotAgain.delete(pair)) snapshot(pair, false);
+      if (stale) snapshot(pair);
     });
   }
 
-  async function fetchSnapshot(pair: string) {
+  // 取得中に接続を開き直していたら、書かずに true を返す (すぐ取り直す)
+  async function fetchSnapshot(pair: string): Promise<boolean> {
     const fail = (reason: string) => log(`snapshot failed for ${pair}: ${reason}`);
+    const startedOn = opens;
     try {
       const res = await fetch(`${apiUrl}/api/order_books?pair=${pair}`, {
         signal: AbortSignal.timeout(snapshotTimeoutMs),
       });
       const text = await res.text();
+      if (startedOn !== opens) {
+        fail("connection reopened during the fetch, fetching again");
+        return true;
+      }
       if (res.status !== 200) {
         fail(`status ${res.status}: ${head(text)}`);
-        return;
+        return false;
       }
       if (!isBook(text)) {
         fail(`unexpected body: ${head(text)}`);
-        return;
+        return false;
       }
       // ヘッダーだけ届いた時点では板の全体が手元に無いので、本文を読み切った時刻を受信時刻にする
       append("orderbook_snapshot", pair, now(), text);
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e));
+      return startedOn !== opens;
     }
+    return false;
   }
 
   function connect() {
@@ -281,8 +287,9 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     armIdle();
 
     sock.onopen = () => {
+      opens++;
       subscribeAll(sock);
-      snapshotAll(true);
+      snapshotAll();
     };
     sock.onmessage = (ev) => {
       if (typeof ev.data === "string") receive(ev.data);
