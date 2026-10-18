@@ -33,6 +33,10 @@ WantedBy=multi-user.target
 
 ## 生存の送信 (Uptime Kuma の push 監視)
 
+- Kuma に push 監視を 2 つ作る。板の監視は Heartbeat Interval 180 秒、約定の監視は 10800 秒 (3 時間)。どちらも Retries 0
+- それぞれの push token を root だけが読めるファイルに置く: 板は `/etc/coincheck/kuma-push-token`、約定は `/etc/coincheck/kuma-push-token-trades` (ディレクトリは 700、ファイルは 600)。heartbeat の service は root で動く
+- token のファイルが読めなければ、その監視には送らない (板の token が読めなければ約定にも送らない)。どちらも Kuma 側で DOWN になって気づく
+
 ```bash
 #!/usr/bin/env bash
 # /usr/local/bin/coincheck-record-heartbeat
