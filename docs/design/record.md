@@ -32,7 +32,7 @@ coincheck record --pair btc_jpy --pair eth_jpy --out /srv/coincheck/data
 - 購読コマンドは `{"type":"subscribe","channel":"btc_jpy-trades"}` / `{"type":"subscribe","channel":"btc_jpy-orderbook"}` (公式ドキュメント)。1 コマンド 1 チャネル。購読の応答は来ない
 - `orderbook`: `["btc_jpy",{"bids":[["<価格>","<数量>"],...],"asks":[...],"last_update_at":"<unix 秒>"}]`。前回からの差分で、数量 `"0"` はその価格の注文が無くなったことを表す。90 秒で 248 件 (約 2.8 件/秒)。板の外側の遠い価格の変化も届く
 - `trades`: `[["<unix 秒>","<約定 ID>","btc_jpy","<価格>","<数量>","<buy|sell>","<taker の注文 ID>","<maker の注文 ID>",<板寄せの注文 ID か null>],...]` の 2 次元配列。0.1 秒ごとにまとめて届く (公式ドキュメント)。90 秒で 7 件の時間帯と、120 秒で 1 件の時間帯があった。taker の約定 (と板寄せ) だけが届き、`order side` は taker 側
-- REST `GET /api/order_books?pair=btc_jpy`: `{"asks":[["<価格>","<数量>"],...],"bids":[...]}`。上下 200 本ずつで、時刻は含まない。`cache-control: max-age=0, private` で、3 秒あけた 2 回の取得で中身が違った (キャッシュではない)。存在しない pair は 400
+- REST `GET /api/order_books?pair=btc_jpy`: `{"asks":[["<価格>","<数量>"],...],"bids":[...]}`。上下 200 本ずつで、時刻は含まない。`cache-control: max-age=0, private` (再利用するなら再検証が要る) で、3 秒あけた 2 回の取得で中身が違った。存在しない pair は 400
 - 価格・数量は文字列で届く。記録は受信したテキストをそのまま残すので、数値への変換も再シリアライズもしない
 
 ## 板のスナップショット
