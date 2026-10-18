@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "gmocoin-cli",
+      "name": "coincheck-cli",
       "dependencies": {
         "commander": "^14.0.3",
       },
