@@ -12,4 +12,4 @@ bun run src/cli.ts --help
 
 ## Commands
 
-- `coincheck record` — record the Public WebSocket order book (diffs) and trades, plus a REST order book snapshot every 60 seconds, as gzip JSONL. Spec: `docs/design/record.md`. Running it as a service: `docs/recording.md`
+- `bun run src/cli.ts record` — record the Public WebSocket order book (diffs) and trades, plus a REST order book snapshot every 60 seconds, as gzip JSONL. Spec: `docs/design/record.md`. Running it as a service: `docs/recording.md`
