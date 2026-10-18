@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+*.tsbuildinfo
+.env
+.claude
+tmp
+# 記録の既定の出力先
+data/
+# kaneo session attach が置くローカル state
+.kaneo.json
