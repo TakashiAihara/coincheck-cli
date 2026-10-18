@@ -547,6 +547,38 @@ describe("snapshots", () => {
     );
   });
 
+  test("neither writes a snapshot that arrives while disconnected nor fetches until reopened", async () => {
+    setup();
+    const stale = { asks: [["1.0", "9"]], bids: [["0.5", "9"]] };
+    let release: (() => void) | undefined;
+    server.rest = () =>
+      new Promise<Response>((resolve) => {
+        release = () => resolve(Response.json(stale));
+      });
+    const recvAt = new Date("2026-10-12T10:00:00.000Z");
+    start({
+      subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }],
+      now: () => recvAt,
+      backoffInitialMs: 600,
+      snapshotIntervalMs: 50,
+    });
+    await waitFor(() => server.restRequests.length === 1, 1000);
+    server.closeConn(0);
+    await waitFor(() => server.closed === 1, 1000);
+    server.rest = () => Response.json(SNAPSHOT);
+    release!();
+    await Bun.sleep(200);
+    // 切れている間は interval が来ても取らない
+    expect(server.opened).toBe(1);
+    expect(server.restRequests.length).toBe(1);
+    await waitFor(() => server.opened === 2 && server.restRequests.length >= 2, 2000);
+    await Bun.sleep(100);
+    await recorder!.stop();
+    const snaps = readDay(dir.path, "orderbook_snapshot/btc_jpy", "2026-10-12").map((r) => r.msg);
+    expect(snaps.length).toBeGreaterThan(0);
+    for (const s of snaps) expect(s).toEqual(SNAPSHOT);
+  });
+
   test("does not fetch again after stop, even for a fetch that started before a reconnect", async () => {
     setup();
     let release: (() => void) | undefined;
@@ -557,7 +589,7 @@ describe("snapshots", () => {
     start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }] });
     await waitFor(() => server.restRequests.length === 1, 1000);
     server.closeConn(0);
-    await waitFor(() => server.opened === 2, 2000);
+    await waitFor(() => server.opened === 2 && sentOn(1).length === 1, 2000);
     await recorder!.stop();
     release!();
     await Bun.sleep(200);

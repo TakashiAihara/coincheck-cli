@@ -39,9 +39,11 @@ WantedBy=multi-user.target
 set -u
 systemctl is-active -q coincheck-record || exit 1
 # 起動から 60 分は約定を見ない (閑散時は最初の約定まで数分かかり、ファイルがまだ無い)
-started=$(date -d "$(systemctl show coincheck-record -p ActiveEnterTimestamp --value)" +%s)
+# Restart= で起動し直すたびに時刻は新しくなる。取れなければ約定も見る側に倒す
+started=$(systemctl show coincheck-record -p ActiveEnterTimestamp --value --timestamp=unix)
+started=${started#@}
 streams="orderbook:2 orderbook_snapshot:4"
-[ $(( $(date +%s) - started )) -lt 3600 ] || streams="$streams trades:60"
+[ -n "$started" ] && [ $(( $(date +%s) - started )) -lt 3600 ] || streams="$streams trades:60"
 for st in $streams; do
   [ -n "$(find <data>/${st%%:*}/btc_jpy -name '*.jsonl.gz' -mmin -${st##*:} -print -quit 2>/dev/null)" ] || { echo "no fresh ${st%%:*} file"; exit 1; }
 done
@@ -72,5 +74,5 @@ WantedBy=timers.target
 ```
 
 - 板の差分は約 2.8 件/秒で、flush は 5 秒ごとなので、2 分書かれなければ止まっている
-- スナップショットは 60 秒ごとに 1 件。k 回続けて失敗すると最後の書き込みから最大 (k+1)×60+5 秒空くので、4 分の基準では 3 回続けて失敗したら生存を送らなくなる (1 回の失敗では誤報しない)
+- スナップショットは 60 秒ごとに 1 件。1〜2 回の失敗では最後の書き込みが 4 分より古くならないので誤報しない。続けて失敗すると 4 分を超え、そこから Kuma が 180 秒 push を受けないと DOWN になる。合わせて 5〜6 回 (6〜7 分) 続けて失敗したあたりで通知が来る
 - 約定は閑散時に 2 分以上空く (2026-10-18 14 時 JST の観測で 90 秒に 7 件の時間帯と、120 秒に 1 件の時間帯があった) ので 60 分で見る。約定の stream だけが止まったときに気づくのは最大で 60 分遅れる

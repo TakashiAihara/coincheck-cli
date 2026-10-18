@@ -123,8 +123,10 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   const paths = new Map<string, string>();
   const created = new Set<string>();
   const snapshotInFlight = new Set<string>();
-  // 接続を開くたびに増やす。取得を始めた後に開き直していたら、その応答は差分が途切れる前の板かもしれない
-  let opens = 0;
+  // 開いている接続の番号 (切れている間は 0)。取得の間に番号が変わっていたら、
+  // その応答は差分が途切れる前後にまたがった板かもしれない
+  let connections = 0;
+  let openConn = 0;
 
   let ws: WebSocket | undefined;
   let stopped = false;
@@ -136,7 +138,6 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   const statsTimer = setInterval(() => {
     log(`stats ${[...counts].map(([k, n]) => `${k}=${n}`).join(" ")}`);
   }, statsIntervalMs);
-  // WebSocket の状態とは関係なく取る。板の差分が止まっていても REST は返るため
   const snapshotTimer = setInterval(() => snapshotAll(), snapshotIntervalMs);
 
   function closeSocket(sock: WebSocket) {
@@ -155,6 +156,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     clearTimeout(reconnectTimer);
     if (ws) closeSocket(ws);
     ws = undefined;
+    openConn = 0;
   }
 
   function flush() {
@@ -192,6 +194,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     log(`disconnected: ${reason}`);
     closeSocket(sock);
     ws = undefined;
+    openConn = 0;
     clearTimeout(idleTimer);
 
     const wait = backoff;
@@ -240,7 +243,8 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   }
 
   function snapshot(pair: string) {
-    if (stopped) return;
+    // 切れている間と停止の後は取らない。差分を受けていない間の板は組み立てに使えず、開いたときに取るため
+    if (openConn === 0) return;
     // 前の取得が終わる前に次を始めると、応答が遅いときに取得が積み上がる
     if (snapshotInFlight.has(pair)) return;
     snapshotInFlight.add(pair);
@@ -250,17 +254,17 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     });
   }
 
-  // 取得中に接続を開き直していたら、書かずに true を返す (すぐ取り直す)
+  // 取得中に接続が切れていたら、書かずに true を返す (繋がっていればすぐ取り直す)
   async function fetchSnapshot(pair: string): Promise<boolean> {
     const fail = (reason: string) => log(`snapshot failed for ${pair}: ${reason}`);
-    const startedOn = opens;
+    const startedOn = openConn;
     try {
       const res = await fetch(`${apiUrl}/api/order_books?pair=${pair}`, {
         signal: AbortSignal.timeout(snapshotTimeoutMs),
       });
       const text = await res.text();
-      if (startedOn !== opens) {
-        fail("connection reopened during the fetch, fetching again");
+      if (startedOn !== openConn) {
+        fail("connection dropped during the fetch, discarded");
         return true;
       }
       if (res.status !== 200) {
@@ -275,7 +279,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
       append("orderbook_snapshot", pair, now(), text);
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e));
-      return startedOn !== opens;
+      return startedOn !== openConn;
     }
     return false;
   }
@@ -287,7 +291,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     armIdle();
 
     sock.onopen = () => {
-      opens++;
+      openConn = ++connections;
       subscribeAll(sock);
       snapshotAll();
     };
