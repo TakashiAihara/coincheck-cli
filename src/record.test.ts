@@ -575,6 +575,49 @@ describe("snapshots", () => {
     await waitFor(() => server.restRequests.length === 2, 1000);
   });
 
+  test("does not let a snapshot reset the reconnect wait", async () => {
+    setup();
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }] });
+    // 開くたびに取るスナップショットが届いてから切る。待ちは 50 → 100 → 200 と伸び続ける
+    const opens: number[] = [];
+    let seen = 0;
+    while (opens.length < 4) {
+      await waitFor(
+        () => server.opened > seen && server.restRequests.length >= server.opened,
+        3000,
+      );
+      seen = server.opened;
+      opens.push(Date.now());
+      await Bun.sleep(20);
+      server.closeConn(seen - 1);
+    }
+    const gaps = opens.slice(1).map((t, i) => t - opens[i]!);
+    [50, 100, 200].forEach((ms, i) => expect(gaps[i]!).toBeGreaterThanOrEqual(ms + 20 - 10));
+  });
+
+  test("discards a body that lacks either asks or bids", async () => {
+    setup();
+    let n = 0;
+    server.rest = () => {
+      n++;
+      if (n === 1) return Response.json({ asks: [] });
+      if (n === 2) return Response.json({ bids: [] });
+      return Response.json(SNAPSHOT);
+    };
+    const recvAt = new Date("2026-10-12T10:00:00.000Z");
+    start({
+      subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }],
+      now: () => recvAt,
+      snapshotIntervalMs: 100,
+    });
+    await waitFor(() => server.restRequests.length >= 4, 2000);
+    await Bun.sleep(100);
+    await recorder!.stop();
+    const snaps = readDay(dir.path, "orderbook_snapshot/btc_jpy", "2026-10-12").map((r) => r.msg);
+    expect(snaps.length).toBeGreaterThan(0);
+    for (const s of snaps) expect(s).toEqual(SNAPSHOT);
+  });
+
   test("discards a non-200 response even when its body looks like a book", async () => {
     setup();
     server.rest = () => Response.json(SNAPSHOT, { status: 500 });

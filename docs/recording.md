@@ -38,8 +38,12 @@ WantedBy=multi-user.target
 # 送らないこと自体が異常の合図 (Kuma の push 監視が 180 秒で DOWN にする)
 set -u
 systemctl is-active -q coincheck-record || exit 1
-for st in orderbook:2 orderbook_snapshot:4 trades:60; do
-  [ -n "$(find <data>/${st%%:*}/btc_jpy -name '*.jsonl.gz' -mmin -${st##*:} -print -quit)" ] || { echo "no fresh ${st%%:*} file"; exit 1; }
+# 起動から 60 分は約定を見ない (閑散時は最初の約定まで数分かかり、ファイルがまだ無い)
+started=$(date -d "$(systemctl show coincheck-record -p ActiveEnterTimestamp --value)" +%s)
+streams="orderbook:2 orderbook_snapshot:4"
+[ $(( $(date +%s) - started )) -lt 3600 ] || streams="$streams trades:60"
+for st in $streams; do
+  [ -n "$(find <data>/${st%%:*}/btc_jpy -name '*.jsonl.gz' -mmin -${st##*:} -print -quit 2>/dev/null)" ] || { echo "no fresh ${st%%:*} file"; exit 1; }
 done
 # token を argv に載せないため、curl の設定として stdin から渡す
 printf 'url = "<Kuma の URL>/api/push/%s?status=up&msg=OK"\n' "$(cat /etc/coincheck/kuma-push-token)" | curl -fsS -m 15 -o /dev/null -K -
@@ -61,6 +65,8 @@ Description=coincheck record heartbeat every minute
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=60s
+# 既定の誤差 (1 分) だと間隔が 2 分近くまで延び、Kuma の 180 秒に近づく
+AccuracySec=1s
 [Install]
 WantedBy=timers.target
 ```
