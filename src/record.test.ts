@@ -518,6 +518,53 @@ describe("snapshots", () => {
     await waitFor(() => server.restRequests.length === 2, 1000);
   });
 
+  test("fetches again after a reconnect even when a fetch was still running", async () => {
+    setup();
+    let release: (() => void) | undefined;
+    server.rest = () =>
+      new Promise<Response>((resolve) => {
+        release = () => resolve(Response.json(SNAPSHOT));
+      });
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }] });
+    await waitFor(() => server.restRequests.length === 1, 1000);
+    server.closeConn(0);
+    await waitFor(() => server.opened === 2 && sentOn(1).length === 1, 2000);
+    await Bun.sleep(100);
+    // 切断前に始めた取得が終わるまでは重ねない
+    expect(server.restRequests.length).toBe(1);
+    server.rest = () => Response.json(SNAPSHOT);
+    release!();
+    await waitFor(() => server.restRequests.length === 2, 1000);
+    await Bun.sleep(200);
+    expect(server.restRequests.length).toBe(2);
+  });
+
+  test("does not queue another fetch when an interval tick finds one running", async () => {
+    setup();
+    let release: (() => void) | undefined;
+    server.rest = () =>
+      new Promise<Response>((resolve) => {
+        release = () => resolve(Response.json(SNAPSHOT));
+      });
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }], snapshotIntervalMs: 50 });
+    await waitFor(() => server.restRequests.length === 1, 1000);
+    await Bun.sleep(300);
+    server.rest = () => new Promise<Response>(() => {});
+    release!();
+    await Bun.sleep(30);
+    // 応答の直後に取り直しはしない。次の取得は interval で始まる
+    expect(server.restRequests.length).toBe(1);
+  });
+
+  test("discards a non-200 response even when its body looks like a book", async () => {
+    setup();
+    server.rest = () => Response.json(SNAPSHOT, { status: 500 });
+    start({ subscriptions: [{ channel: "orderbook", pair: "btc_jpy" }] });
+    await waitFor(() => logs.some((l) => l.includes("status 500")), 1000);
+    await recorder!.stop();
+    expect(listFiles(dir.path)).toEqual([]);
+  });
+
   test("logs a failed fetch, writes nothing for it, and keeps recording", async () => {
     setup();
     let n = 0;
@@ -577,6 +624,8 @@ describe("snapshots", () => {
     const firstAt = Date.now();
     await waitFor(() => server.opened >= 2, 1500);
     expect(Date.now() - firstAt).toBeGreaterThanOrEqual(250);
+    // スナップショットで延びていれば、最後の取得 (50ms ごと) から 300ms 後まで切れない
+    expect(Date.now() - firstAt).toBeLessThan(450);
   });
 
   test("does not write a snapshot that arrives after stop", async () => {
@@ -663,7 +712,8 @@ describe("recovering", () => {
     server.closeConn(seen - 1);
     await waitFor(() => server.opened > seen, 3000);
     expect(Date.now() - closedAt).toBeGreaterThanOrEqual(40);
-    expect(Date.now() - closedAt).toBeLessThan(90);
+    // 戻していなければ上限の 400ms を待つ
+    expect(Date.now() - closedAt).toBeLessThan(300);
   });
 
   test("reconnects when nothing arrives within the idle timeout, and closes the idle connection", async () => {

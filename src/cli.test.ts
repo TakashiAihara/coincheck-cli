@@ -69,6 +69,8 @@ test("record subscribes orderbook and trades of btc_jpy by default and fetches i
   dir = tempDir();
   const p = spawnCli(["record", "--out", dir.path], server);
   await waitFor(() => server!.received.length >= 2 && server!.restRequests.length >= 1, 5000);
+  // 停止より後に届いた応答は書かないので、応答が届く間を置く
+  await Bun.sleep(300);
   p.kill("SIGINT");
   expect(await p.exited).toBe(0);
   expect(server.received.map((r) => JSON.parse(r.text))).toEqual([
@@ -76,7 +78,11 @@ test("record subscribes orderbook and trades of btc_jpy by default and fetches i
     { type: "subscribe", channel: "btc_jpy-trades" },
   ]);
   expect(server.restRequests).toEqual(["/api/order_books?pair=btc_jpy"]);
-  expect(readdirSync(join(dir.path, "orderbook_snapshot/btc_jpy")).length).toBe(1);
+  const snaps = readdirSync(join(dir.path, "orderbook_snapshot/btc_jpy"));
+  expect(snaps.length).toBe(1);
+  expect(
+    readRecords(join(dir.path, "orderbook_snapshot/btc_jpy", snaps[0]!)).map((r) => r.msg),
+  ).toEqual([{ asks: [["13000000.0", "0.1"]], bids: [["12990000.0", "0.2"]] }]);
 }, 10_000);
 
 test("record writes what it has buffered and exits 0 on SIGTERM", async () => {

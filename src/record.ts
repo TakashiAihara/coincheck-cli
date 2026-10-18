@@ -123,6 +123,8 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   const paths = new Map<string, string>();
   const created = new Set<string>();
   const snapshotInFlight = new Set<string>();
+  // 再接続の時点で取得中なら、その応答は切断より前の板かもしれないので、終わったら取り直す
+  const snapshotAgain = new Set<string>();
 
   let ws: WebSocket | undefined;
   let stopped = false;
@@ -135,7 +137,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     log(`stats ${[...counts].map(([k, n]) => `${k}=${n}`).join(" ")}`);
   }, statsIntervalMs);
   // WebSocket の状態とは関係なく取る。板の差分が止まっていても REST は返るため
-  const snapshotTimer = setInterval(snapshotAll, snapshotIntervalMs);
+  const snapshotTimer = setInterval(() => snapshotAll(), snapshotIntervalMs);
 
   function closeSocket(sock: WebSocket) {
     sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;
@@ -233,13 +235,21 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     }
   }
 
-  function snapshotAll() {
-    for (const pair of snapshotPairs) {
-      // 前の取得が終わる前に次を始めると、応答が遅いときに取得が積み上がる
-      if (snapshotInFlight.has(pair)) continue;
-      snapshotInFlight.add(pair);
-      void fetchSnapshot(pair).finally(() => snapshotInFlight.delete(pair));
+  function snapshotAll(afterReconnect = false) {
+    for (const pair of snapshotPairs) snapshot(pair, afterReconnect);
+  }
+
+  function snapshot(pair: string, afterReconnect: boolean) {
+    // 前の取得が終わる前に次を始めると、応答が遅いときに取得が積み上がる
+    if (snapshotInFlight.has(pair)) {
+      if (afterReconnect) snapshotAgain.add(pair);
+      return;
     }
+    snapshotInFlight.add(pair);
+    void fetchSnapshot(pair).finally(() => {
+      snapshotInFlight.delete(pair);
+      if (snapshotAgain.delete(pair)) snapshot(pair, false);
+    });
   }
 
   async function fetchSnapshot(pair: string) {
@@ -272,7 +282,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
 
     sock.onopen = () => {
       subscribeAll(sock);
-      snapshotAll();
+      snapshotAll(true);
     };
     sock.onmessage = (ev) => {
       if (typeof ev.data === "string") receive(ev.data);
